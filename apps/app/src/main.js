@@ -203,10 +203,11 @@ function stopCamera() {
   render();
 }
 
-async function saveImage(dataUrl) {
+async function saveImage(dataUrl, caption) {
   const img = {
     id: uid(), name: 'Photo ' + new Date().toLocaleTimeString(),
-    dataUrl, folderId: state.currentFolderId || null, createdAt: Date.now()
+    dataUrl, folderId: state.currentFolderId || null,
+    caption: caption || '', createdAt: Date.now()
   };
   state.images.push(img);
   await dbPut('images', img);
@@ -425,6 +426,11 @@ function renderFolder(app) {
   const imgs = state.images.filter(im => im.folderId === folder.id);
   const fs = getFolderSettings(folder);
 
+  // Interleave snips and images by createdAt, assign sequential numbers
+  const items = [...snips.map(n => ({ kind: 'snip', data: n, sortKey: n.createdAt })),
+                 ...imgs.map(im => ({ kind: 'image', data: im, sortKey: im.createdAt }))]
+    .sort((a, b) => a.sortKey - b.sortKey);
+
   app.innerHTML = `
     <div class="screen">
       <div class="header">
@@ -436,20 +442,27 @@ function renderFolder(app) {
         ? '<div class="master-prompt" id="mpEl"><span class="mp-label">Prompt:</span><span class="mp-text">' + esc(trunc(folder.masterPrompt, 40)) + '</span></div>'
         : '<div class="master-prompt add-mp" id="addMP"><span class="mp-label">+ Master Prompt</span></div>'}
       <div class="scroll-area" id="folderList">
-        ${snips.length === 0 && imgs.length === 0
+        ${items.length === 0
           ? '<div class="empty-msg">Hold PTT to add a snip<br>Double-press PTT for photo</div>' : ''}
-        ${snips.map((n, i) => `
-          <div class="list-item snip-item" data-id="${n.id}">
-            ${fs.checkboxesEnabled ? '<label class="snip-cb" data-sid="' + n.id + '"><input type="checkbox" ' + (n.checked ? 'checked' : '') + '/><span class="cb-mark"></span></label>' : ''}
-            <span class="item-icon">📄</span>
-            <span class="item-num">${pad(i + 1)}</span>
-            <span class="item-text ${n.checked && fs.checkboxesEnabled ? 'checked-text' : ''}">${esc(trunc(n.text, 22))}</span>
-          </div>`).join('')}
-        ${imgs.map(im => `
-          <div class="list-item img-item" data-id="${im.id}">
-            <span class="item-icon">📷</span>
-            <span class="item-text">${esc(trunc(im.name || 'Photo', 25))}</span>
-          </div>`).join('')}
+        ${items.map((item, idx) => {
+          const num = pad(idx + 1);
+          if (item.kind === 'snip') {
+            const n = item.data;
+            return `<div class="list-item snip-item" data-id="${n.id}">
+              ${fs.checkboxesEnabled ? '<label class="snip-cb" data-sid="' + n.id + '"><input type="checkbox" ' + (n.checked ? 'checked' : '') + '/><span class="cb-mark"></span></label>' : ''}
+              <span class="item-icon">📄</span>
+              <span class="item-num">${num}</span>
+              <span class="item-text ${n.checked && fs.checkboxesEnabled ? 'checked-text' : ''}">${esc(trunc(n.text, 22))}</span>
+            </div>`;
+          } else {
+            const im = item.data;
+            return `<div class="list-item img-item" data-id="${im.id}">
+              <span class="item-icon">📷</span>
+              <span class="item-num">${num}</span>
+              <span class="item-text">${esc(trunc(im.caption || im.name || 'Photo', 22))}</span>
+            </div>`;
+          }
+        }).join('')}
       </div>
       <div class="toolbar">
         <button class="tool-btn" id="btnAddSnipF">+ Snip</button>
@@ -484,7 +497,7 @@ function renderFolder(app) {
   });
   document.querySelectorAll('#folderList .img-item').forEach(el => {
     el.addEventListener('click', () => viewImage(el.dataset.id));
-    bindLongPress(el, () => deleteImage(el.dataset.id));
+    bindLongPress(el, () => editImageCaption(el.dataset.id));
   });
 }
 
@@ -594,6 +607,7 @@ function renderEditModal(app) {
   if (!et) { state.screen = 'home'; render(); return; }
   let txt = '', title = 'Edit';
   if (et.type === 'snip') { const n = state.snips.find(x => x.id === et.id); txt = n ? n.text : ''; title = 'Edit Snip'; }
+  else if (et.type === 'imageCaption') { const im = state.images.find(x => x.id === et.id); txt = im ? (im.caption || '') : ''; title = 'Edit Caption'; }
   else if (et.type === 'folder') { const f = state.folders.find(x => x.id === et.id); txt = f ? f.name : ''; title = 'Edit Folder'; }
   else if (et.type === 'masterPrompt') { const f = state.folders.find(x => x.id === et.id); txt = f ? (f.masterPrompt || '') : ''; title = 'Master Prompt'; }
   else if (et.type === 'newSnip') { txt = ''; title = 'New Snip'; }
@@ -606,8 +620,10 @@ function renderEditModal(app) {
         <button class="icon-btn" id="btnSaveEdit">💾</button>
       </div>
       <div class="edit-area">
-        <textarea id="editText" class="edit-ta" placeholder="Type or hold PTT to dictate…">${esc(txt)}</textarea>
+        ${et.type === 'imageCaption' ? '<div class="caption-hint">Describe this image…</div>' : ''}
+        <textarea id="editText" class="edit-ta" placeholder="${et.type === 'imageCaption' ? 'What does this image show?' : 'Type or hold PTT to dictate…'}">${esc(txt)}</textarea>
       </div>
+      ${et.type === 'imageCaption' ? '<button class="del-btn" id="btnDelCaption">🗑 Delete Caption</button>' : ''}
       ${et.type === 'snip' ? '<button class="del-btn" id="btnDelSnip">Delete Snip</button>' : ''}
       ${state.isRecording ? '<div class="rec-pill">🎙 Dictating…</div>' : ''}
     </div>`;
@@ -619,8 +635,19 @@ function renderEditModal(app) {
     ta.addEventListener('blur', () => { setTimeout(() => { if (activeTextarea === ta) activeTextarea = null; }, 200); });
   }
   $('#btnCancelEdit')?.addEventListener('click', goBackFromEdit);
-  $('#btnSaveEdit')?.addEventListener('click', saveEdit);
+  $('#btnSaveEdit')?.addEventListener('click', () => {
+    const et = state.editTarget;
+    if (et && et.type === 'imageCaption') saveImageCaption();
+    else saveEdit();
+  });
   $('#btnDelSnip')?.addEventListener('click', deleteSnipFromEdit);
+  $('#btnDelCaption')?.addEventListener('click', async () => {
+    const et = state.editTarget;
+    if (!et || et.type !== 'imageCaption') return;
+    const im = state.images.find(x => x.id === et.id);
+    if (im) { im.caption = ''; await dbPut('images', im); }
+    activeTextarea = null; goBackFromEdit();
+  });
 }
 
 function goBackFromEdit() {
@@ -636,6 +663,10 @@ async function saveEdit() {
   if (!et) return;
   const text = ($('#editText')?.value || '').trim();
   if (et.type === 'snip') { const n = state.snips.find(x => x.id === et.id); if (n) { n.text = text; n.updatedAt = Date.now(); await dbPut('snips', n); } }
+  else if (et.type === 'imageCaption') {
+    const im = state.images.find(x => x.id === et.id);
+    if (im) { im.caption = text; im.name = text || im.name; await dbPut('images', im); }
+  }
   else if (et.type === 'folder') { const f = state.folders.find(x => x.id === et.id); if (f && text) { f.name = text; await dbPut('folders', f); } }
   else if (et.type === 'masterPrompt') { const f = state.folders.find(x => x.id === et.id); if (f) { f.masterPrompt = text; await dbPut('folders', f); } }
   else if (et.type === 'newSnip' && text) {
@@ -702,9 +733,14 @@ function sendAllInFolder(folderId) {
   const f = state.folders.find(x => x.id === folderId);
   if (!f) return;
   const snips = state.snips.filter(n => n.folderId === folderId);
-  if (!snips.length) { showStatus('No snips to send'); return; }
+  const imgs = state.images.filter(im => im.folderId === folderId);
+  if (!snips.length && !imgs.length) { showStatus('No snips to send'); return; }
   const body = snips.map((n, i) => pad(i + 1) + '. ' + n.text).join('\n\n');
-  sendToRabbit(f.masterPrompt ? f.masterPrompt + '\n\n' + body : body);
+  const imgMsgs = imgs.map((im, i) => {
+    const cap = im.caption ? ` [Caption: ${im.caption}]` : '';
+    return `[Image ${pad(snips.length + i + 1)}: ${im.dataUrl}]${cap}`;
+  }).join('\n\n');
+  sendToRabbit(f.masterPrompt ? f.masterPrompt + '\n\n' + body + (imgMsgs ? '\n\n' + imgMsgs : '') : body + (imgMsgs ? '\n\n' + imgMsgs : ''));
 }
 
 function sendToRabbit(message) {
@@ -747,14 +783,133 @@ function viewImage(imgId) {
   if (!im) return;
   const ov = document.createElement('div');
   ov.className = 'img-overlay';
-  ov.innerHTML = '<img src="' + im.dataUrl + '" class="img-preview"><div class="img-close">✕ Close</div>';
-  ov.addEventListener('click', () => ov.remove());
+
+  let scale = 1, lastScale = 1, translateX = 0, translateY = 0, pivots = null;
+
+  const img = document.createElement('img');
+  img.src = im.dataUrl;
+  img.className = 'img-preview';
+  img.style.transform = 'translate(0,0) scale(1)';
+  img.style.cursor = 'grab';
+  img.style.transition = 'transform 0.1s ease-out';
+
+  const captionEl = document.createElement('div');
+  captionEl.className = 'img-caption';
+  captionEl.textContent = im.caption || '';
+
+  const btnBar = document.createElement('div');
+  btnBar.className = 'img-btn-bar';
+
+  const sendBtn = document.createElement('button');
+  sendBtn.className = 'img-action-btn';
+  sendBtn.textContent = im.caption ? '📤 Send to Rabbit' : '📤 Send Image';
+  sendBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    sendImageToRabbit(im);
+  });
+
+  const closeBtn = document.createElement('button');
+  closeBtn.className = 'img-action-btn img-close-btn';
+  closeBtn.textContent = '✕ Close';
+  closeBtn.addEventListener('click', () => ov.remove());
+
+  btnBar.appendChild(sendBtn);
+  btnBar.appendChild(closeBtn);
+
+  ov.appendChild(img);
+  if (im.caption) ov.appendChild(captionEl);
+  ov.appendChild(btnBar);
   document.body.appendChild(ov);
+
+  ov.addEventListener('touchstart', (e) => {
+    if (e.touches.length === 2) {
+      const dx = e.touches[0].clientX - e.touches[1].clientX;
+      const dy = e.touches[0].clientY - e.touches[1].clientY;
+      pivots = { dist: Math.hypot(dx, dy), scale };
+    } else if (e.touches.length === 1) {
+      img.style.transition = 'none';
+    }
+  }, { passive: true });
+
+  ov.addEventListener('touchmove', (e) => {
+    if (e.touches.length === 2 && pivots) {
+      const dx = e.touches[0].clientX - e.touches[1].clientX;
+      const dy = e.touches[0].clientY - e.touches[1].clientY;
+      const dist = Math.hypot(dx, dy);
+      scale = Math.max(1, Math.min(lastScale * (dist / pivots.dist), 5));
+      img.style.transform = `translate(${translateX}px,${translateY}px) scale(${scale})`;
+      img.style.cursor = 'grab';
+    } else if (e.touches.length === 1 && scale > 1) {
+      translateX += e.touches[0].movementX;
+      translateY += e.touches[0].movementY;
+      img.style.transform = `translate(${translateX}px,${translateY}px) scale(${scale})`;
+    }
+  }, { passive: true });
+
+  ov.addEventListener('touchend', (e) => {
+    if (e.touches.length < 2) {
+      pivots = null;
+      lastScale = scale;
+      img.style.transition = 'transform 0.2s ease-out';
+      if (scale <= 1) { scale = 1; lastScale = 1; translateX = 0; translateY = 0; }
+    }
+    if (e.touches.length === 0) {
+      img.style.transition = 'transform 0.2s ease-out';
+    }
+  });
+
+  // Mouse wheel zoom for browser testing
+  img.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const factor = e.deltaY > 0 ? 0.9 : 1.1;
+    scale = Math.max(1, Math.min(scale * factor, 5));
+    lastScale = scale;
+    img.style.transform = `translate(${translateX}px,${translateY}px) scale(${scale})`;
+  }, { passive: false });
+
+  img.addEventListener('click', (e) => {
+    if (scale > 1) { scale = 1; lastScale = 1; translateX = 0; translateY = 0; img.style.transform = 'translate(0,0) scale(1)'; }
+    else ov.remove();
+  });
+}
+
+function sendImageToRabbit(im) {
+  const fs = getActiveFolderSettings();
+  const caption = im.caption || '';
+  const msg = caption
+    ? `[Image caption: ${caption}]\n\n[Image data: ${im.dataUrl}]`
+    : `[Image data: ${im.dataUrl}]`;
+  if (typeof PluginMessageHandler !== 'undefined') {
+    PluginMessageHandler.postMessage(JSON.stringify({
+      message: msg, useLLM: true,
+      wantsR1Response: fs.wantsR1Response, wantsJournalEntry: fs.wantsJournalEntry
+    }));
+    showStatus('Sending to Rabbit…');
+  } else { showStatus('Agent unavailable'); }
 }
 
 async function deleteImage(imgId) {
   state.images = state.images.filter(im => im.id !== imgId);
   await dbDelete('images', imgId); showStatus('Image deleted'); render();
+}
+
+function editImageCaption(imgId) {
+  const im = state.images.find(x => x.id === imgId);
+  if (!im) return;
+  state.editTarget = { type: 'imageCaption', id: imgId };
+  state.screen = 'editModal'; render();
+}
+
+async function saveImageCaption() {
+  const et = state.editTarget;
+  if (!et || et.type !== 'imageCaption') return;
+  const im = state.images.find(x => x.id === et.id);
+  if (!im) return;
+  const caption = ($('#editText')?.value || '').trim();
+  im.caption = caption;
+  im.name = caption || ('Photo ' + new Date().toLocaleTimeString());
+  await dbPut('images', im);
+  activeTextarea = null; goBackFromEdit();
 }
 
 // ---- Status ----
