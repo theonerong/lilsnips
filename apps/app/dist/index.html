@@ -210,7 +210,7 @@ let state = {
   currentFolderId: null, settings: { ...DEFAULT_SETTINGS },
   editTarget: null, isRecording: false, statusMsg: '',
   lastAgentResponse: null,
-  cameraActive: false, cameraPreviewData: null
+  cameraActive: false, cameraPreviewData: null, cameraStream: null
 };
 let activeTextarea = null;
 
@@ -231,71 +231,91 @@ function getActiveFolderSettings() {
 }
 
 // ============================================================
-// Camera — via PluginMessageHandler
+// Camera — via navigator.mediaDevices.getUserMedia
 // ============================================================
-// The R1 camera is controlled by sending JSON messages through
-// PluginMessageHandler.postMessage(). The Flutter bridge handles
-// camera hardware and sends frames/captures back via onPluginMessage.
+// The creations-sdk uses standard mobile web APIs for camera access.
+// R1 is an Android device, so the rear camera is available via:
+//   navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } })
 //
-// Protocol:
-//   Send: { "type": "camera", "action": "start" }   → activates camera preview
-//   Send: { "type": "camera", "action": "capture" }  → captures current frame
-//   Send: { "type": "camera", "action": "stop" }     → stops camera preview
-//
-// Receive via onPluginMessage:
-//   { type: "cameraPreview", imageBase64: "..." }     → live preview frame
-//   { type: "cameraCaptured", imageBase64: "..." }    → captured photo
-//   { type: "cameraStopped" }                         → camera stopped confirmation
+// Key differences from PluginMessageHandler approach:
+//   - getUserMedia is the native browser API — no Flutter bridge message needed
+//   - Video preview is an HTML <video> element (not base64 image frames)
+//   - Capture is a canvas drawImage from the video frame
 
-let pttLocked = false;
-
-function lockPtt(lock) {
-  pttLocked = lock;
-  if (typeof PluginMessageHandler !== 'undefined') {
-    PluginMessageHandler.postMessage(JSON.stringify({ type: 'lockPtt', locked: lock }));
-  }
-}
+let cameraStream = null;   // MediaStream from getUserMedia
 
 function startCamera() {
   state.cameraActive = true;
   state.cameraPreviewData = null;
-  lockPtt(true);
   render();
 
-  if (typeof PluginMessageHandler !== 'undefined') {
-    PluginMessageHandler.postMessage(JSON.stringify({
-      type: 'camera',
-      action: 'start'
-    }));
-  } else {
-    showStatus('Camera: browser mode');
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    showStatus('Camera not supported');
+    stopCamera();
+    return;
   }
+
+  navigator.mediaDevices.getUserMedia({
+    video: {
+      facingMode: { ideal: 'environment' },
+      width: { ideal: 640 },
+      height: { ideal: 480 }
+    },
+    audio: false
+  }).then(stream => {
+    cameraStream = stream;
+    state.cameraStream = stream;
+    showStatus('Camera active');
+    render();
+  }).catch(err => {
+    console.error('Camera error:', err);
+    showStatus('Camera denied');
+    stopCamera();
+  });
 }
 
 function captureCamera() {
-  if (!state.cameraActive) return;
-  if (typeof PluginMessageHandler !== 'undefined') {
-    PluginMessageHandler.postMessage(JSON.stringify({
-      type: 'camera',
-      action: 'capture'
-    }));
-    showStatus('Capturing…');
-  } else {
-    showStatus('Camera unavailable');
-    stopCamera();
+  if (!state.cameraActive || !cameraStream) return;
+
+  const video = document.querySelector('#cameraVideo');
+  if (!video || video.readyState < 2) {
+    showStatus('Not ready');
+    return;
   }
+
+  const w = video.videoWidth;
+  const h = video.videoHeight;
+  if (!w || !h) {
+    showStatus('No video frame');
+    return;
+  }
+
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(video, 0, 0, w, h);
+
+  const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+  state.cameraActive = false;
+
+  if (cameraStream) {
+    cameraStream.getTracks().forEach(t => t.stop());
+    cameraStream = null;
+  }
+  state.cameraStream = null;
+
+  saveImage(dataUrl);
 }
 
 function stopCamera() {
-  if (typeof PluginMessageHandler !== 'undefined') {
-    PluginMessageHandler.postMessage(JSON.stringify({
-      type: 'camera',
-      action: 'stop'
-    }));
+  if (cameraStream) {
+    cameraStream.getTracks().forEach(t => t.stop());
+    cameraStream = null;
   }
+  state.cameraStream = null;
   state.cameraActive = false;
   state.cameraPreviewData = null;
-  lockPtt(false);
   render();
 }
 
@@ -375,13 +395,13 @@ document.addEventListener('keydown', (e) => {
 // ============================================================
 
 window.addEventListener('longPressStart', () => {
-  if (state.cameraActive || pttLocked) return;
+  if (state.cameraActive) return;
   state.isRecording = true; render();
   if (typeof CreationVoiceHandler !== 'undefined') CreationVoiceHandler.postMessage('start');
 });
 
 window.addEventListener('longPressEnd', () => {
-  if (state.cameraActive || pttLocked) return;
+  if (state.cameraActive) return;
   state.isRecording = false; render();
   if (typeof CreationVoiceHandler !== 'undefined') CreationVoiceHandler.postMessage('stop');
 });
@@ -391,36 +411,6 @@ window.addEventListener('longPressEnd', () => {
 // ============================================================
 
 window.onPluginMessage = async function(data) {
-  // Camera preview frame
-  if (data.type === 'cameraPreview' && data.imageBase64) {
-    if (state.cameraActive) {
-      state.cameraPreviewData = 'data:image/jpeg;base64,' + data.imageBase64;
-      const feed = $('#cameraFeed');
-      if (feed) feed.style.backgroundImage = 'url(' + state.cameraPreviewData + ')';
-    }
-    return;
-  }
-
-  // Camera captured photo
-  if (data.type === 'cameraCaptured' && data.imageBase64) {
-    const dataUrl = 'data:image/jpeg;base64,' + data.imageBase64;
-    state.cameraActive = false;
-    state.cameraPreviewData = null;
-    lockPtt(false);
-    await saveImage(dataUrl);
-    render();
-    return;
-  }
-
-  // Camera stopped confirmation
-  if (data.type === 'cameraStopped') {
-    state.cameraActive = false;
-    state.cameraPreviewData = null;
-    lockPtt(false);
-    render();
-    return;
-  }
-
   // STT result
   if (data.type === 'sttEnded' && data.transcript) {
     const text = data.transcript.trim();
@@ -473,12 +463,25 @@ function render() {
 // ---- Camera Screen ----
 
 function renderCamera(app) {
+  // Attach the live MediaStream to the <video> element once it's in the DOM
+  if (state.cameraStream) {
+    setTimeout(() => {
+      const vid = document.querySelector('#cameraVideo');
+      if (vid && !vid.srcObject) {
+        vid.srcObject = state.cameraStream;
+        vid.play().catch(() => {});
+      }
+    }, 10);
+  }
+
   app.innerHTML = `
     <div class="camera-screen">
-      <div class="camera-feed" id="cameraFeed"
-        ${state.cameraPreviewData ? 'style="background-image:url(' + state.cameraPreviewData + ')"' : ''}>
-        ${!state.cameraPreviewData ? '<div class="camera-waiting">📷 Waiting for camera…</div>' : ''}
-      </div>
+      <video id="cameraVideo"
+        autoplay
+        playsinline
+        muted
+        style="width:100%;height:100%;object-fit:cover;background:#000">
+      </video>
       <div class="camera-hud">
         <div class="camera-hint">PTT: Capture &nbsp;|&nbsp; 2×PTT: Exit</div>
       </div>
