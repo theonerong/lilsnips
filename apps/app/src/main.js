@@ -781,8 +781,8 @@ function emailFolder(folderId) {
       body += num + '. ' + item.data.text + '\n\n';
     } else {
       const im = item.data;
-      const cap = im.caption ? `\n   Caption: ${im.caption}` : '';
-      body += num + '. [Image attached](' + im.dataUrl + ')' + cap + '\n\n';
+      // Email can't include image data URLs, so use caption text instead
+      body += num + '. ' + (im.caption || '[photo]') + '\n\n';
     }
   });
 
@@ -816,6 +816,14 @@ function viewImage(imgId) {
   const btnBar = document.createElement('div');
   btnBar.className = 'img-btn-bar';
 
+  const descBtn = document.createElement('button');
+  descBtn.className = 'img-action-btn';
+  descBtn.textContent = 'Desc';
+  descBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    describeImageToCaption(im, captionEl, descBtn);
+  });
+
   const sendBtn = document.createElement('button');
   sendBtn.className = 'img-action-btn';
   sendBtn.textContent = im.caption ? '📤 Send to Rabbit' : '📤 Send Image';
@@ -826,9 +834,10 @@ function viewImage(imgId) {
 
   const closeBtn = document.createElement('button');
   closeBtn.className = 'img-action-btn img-close-btn';
-  closeBtn.textContent = '✕ Close';
+  closeBtn.textContent = '✕';
   closeBtn.addEventListener('click', () => ov.remove());
 
+  btnBar.appendChild(descBtn);
   btnBar.appendChild(sendBtn);
   btnBar.appendChild(closeBtn);
 
@@ -902,6 +911,42 @@ function sendImageToRabbit(im) {
     }));
     showStatus('Sending to Rabbit…');
   } else { showStatus('Agent unavailable'); }
+}
+
+async function describeImageToCaption(im, captionEl, descBtn) {
+  descBtn.textContent = '…';
+  descBtn.disabled = true;
+
+  const msg = 'describe what you see in this image in full detail including any recognizable text';
+
+  if (typeof PluginMessageHandler !== 'undefined') {
+    PluginMessageHandler.postMessage(JSON.stringify({
+      message: msg, useLLM: true,
+      wantsR1Response: false, wantsJournalEntry: false
+    }));
+
+    // Store a one-shot listener — next agent response fills the caption
+    const originalHandler = window.onPluginMessage;
+    window.onPluginMessage = async function(data) {
+      window.onPluginMessage = originalHandler;
+      const resp = data.data || data.message || '';
+      if (resp && typeof resp === 'string') {
+        im.caption = resp.trim();
+        im.name = im.caption;
+        await dbPut('images', im);
+        captionEl.textContent = im.caption;
+        captionEl.style.color = 'var(--accent)';
+        setTimeout(() => { captionEl.style.color = ''; }, 2000);
+        showStatus('Caption saved');
+      }
+      descBtn.textContent = 'Desc';
+      descBtn.disabled = false;
+    };
+  } else {
+    descBtn.textContent = 'Desc';
+    descBtn.disabled = false;
+    showStatus('Agent unavailable');
+  }
 }
 
 async function deleteImage(imgId) {
