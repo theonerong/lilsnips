@@ -901,8 +901,10 @@ function viewImage(imgId) {
 function sendImageToRabbit(im) {
   const fs = getActiveFolderSettings();
   const caption = im.caption || '';
+  // Image data first, caption directive second — agent must see and process
+  // the image before encountering the caption instruction
   const msg = caption
-    ? `[Image caption: ${caption}]\n\n[Image data: ${im.dataUrl}]`
+    ? `[Image data: ${im.dataUrl}]\n\n[Image caption: ${caption}]`
     : `[Image data: ${im.dataUrl}]`;
   if (typeof PluginMessageHandler !== 'undefined') {
     PluginMessageHandler.postMessage(JSON.stringify({
