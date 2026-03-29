@@ -589,7 +589,7 @@ function renderFolder(app) {
       <div class="toolbar">
         <button class="tool-btn" id="btnAddSnipF">+ Snip</button>
         <button class="tool-btn" id="btnSendAll">Send All</button>
-        <button class="tool-btn" id="btnEmail">✉</button>
+        <button class="tool-btn" id="btnEmail">Email</button>
       </div>
       ${state.lastAgentResponse ? '<div class="agent-bar" id="agentBar"><span class="agent-lbl">Agent:</span><span class="agent-txt">' + esc(trunc(state.lastAgentResponse, 30)) + '</span><span class="agent-save">+ Save</span></div>' : ''}
       ${state.isRecording ? '<div class="rec-pill">🎙 Recording…</div>' : ''}
@@ -891,7 +891,23 @@ function emailFolder(folderId) {
   if (!snips.length && !imgs.length) { showStatus('Folder is empty'); return; }
   let body = '';
   if (f.masterPrompt) body += 'Master Prompt:\n' + f.masterPrompt + '\n\n---\n\n';
-  snips.forEach((n, i) => { body += 'Snip ' + pad(i + 1) + ':\n' + n.text + '\n\n'; });
+
+  // Interleave snips and images by createdAt, assign sequential numbers
+  const items = [...snips.map(n => ({ kind: 'snip', data: n, sortKey: n.createdAt })),
+                 ...imgs.map(im => ({ kind: 'image', data: im, sortKey: im.createdAt }))]
+    .sort((a, b) => a.sortKey - b.sortKey);
+
+  items.forEach((item, idx) => {
+    const num = pad(idx + 1);
+    if (item.kind === 'snip') {
+      body += num + '. ' + item.data.text + '\n\n';
+    } else {
+      const im = item.data;
+      const cap = im.caption ? `\n   Caption: ${im.caption}` : '';
+      body += num + '. [Image attached](' + im.dataUrl + ')' + cap + '\n\n';
+    }
+  });
+
   const fs = getFolderSettings(f);
   if (typeof PluginMessageHandler !== 'undefined') {
     const payload = { message: 'Send this folder content to my Rabbit Hole email:\n\nFolder: ' + f.name + '\n\n' + body, useLLM: true, wantsR1Response: fs.wantsR1Response };
