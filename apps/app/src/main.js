@@ -44,10 +44,10 @@ const dbDelete = (s, k) => dbOp(s, 'readwrite', st => st.delete(k));
 
 // ---- Default Settings ----
 
-const DEFAULT_SETTINGS = { theme: 'default', textScale: 100 };
+const DEFAULT_SETTINGS = { theme: 'default', textScale: 100, describePrompt: "describe what you see in this image in as much detail as possible, including any readable text, and do not mention anything that isn't there and do not ask any followup questions, your response will be used as a caption for the image. " };
 const DEFAULT_FOLDER_SETTINGS = {
   useLLM: true, useSerpAPI: false, wantsR1Response: true,
-  wantsJournalEntry: false, checkboxesEnabled: false
+  wantsJournalEntry: false, checkboxesEnabled: false, collapsedView: false
 };
 
 async function loadSettings() {
@@ -448,19 +448,30 @@ function renderFolder(app) {
           const num = pad(idx + 1);
           if (item.kind === 'snip') {
             const n = item.data;
-            return `<div class="list-item snip-item" data-id="${n.id}">
+            return `<div class="list-item snip-item${fs.collapsedView ? '' : ' snip-item--expanded'}" data-id="${n.id}">
               ${fs.checkboxesEnabled ? '<label class="snip-cb" data-sid="' + n.id + '"><input type="checkbox" ' + (n.checked ? 'checked' : '') + '/><span class="cb-mark"></span></label>' : ''}
               <span class="item-icon">📄</span>
               <span class="item-num">${num}</span>
-              <span class="item-text ${n.checked && fs.checkboxesEnabled ? 'checked-text' : ''}">${esc(trunc(n.text, 22))}</span>
+              <span class="item-text ${n.checked && fs.checkboxesEnabled ? 'checked-text' : ''}">${fs.collapsedView ? esc(trunc(n.text, 22)) : esc(n.text)}</span>
             </div>`;
           } else {
             const im = item.data;
-            return `<div class="list-item img-item" data-id="${im.id}">
-              <span class="item-icon">📷</span>
-              <span class="item-num">${num}</span>
-              <span class="item-text">${esc(trunc(im.caption || im.name || 'Photo', 22))}</span>
-            </div>`;
+            if (fs.collapsedView) {
+              return `<div class="list-item img-item" data-id="${im.id}">
+                <span class="item-icon">📷</span>
+                <span class="item-num">${num}</span>
+                <span class="item-text">${esc(trunc(im.caption || im.name || 'Photo', 22))}</span>
+              </div>`;
+            } else {
+              return `<div class="list-item img-item img-item--thumb" data-id="${im.id}">
+                <div class="thumb-row">
+                  <span class="item-icon">📷</span>
+                  <span class="item-num">${num}</span>
+                </div>
+                <div class="thumb-img-wrap"><img class="thumb-img" src="${im.dataUrl}" alt="photo"></div>
+                <div class="thumb-caption">${esc(im.caption || im.name || '')}</div>
+              </div>`;
+            }
           }
         }).join('')}
       </div>
@@ -517,6 +528,7 @@ function renderFolderSettings(app) {
       <div class="scroll-area">
         <div class="section-lbl">${esc(trunc(folder.name, 20))}</div>
         <div class="setting-row"><span class="setting-lbl">Checkboxes</span><label class="toggle"><input type="checkbox" id="togCB" ${fs.checkboxesEnabled ? 'checked' : ''}><span class="slider"></span></label></div>
+        <div class="setting-row"><span class="setting-lbl">Collapsed View</span><label class="toggle"><input type="checkbox" id="togCollapsed" ${fs.collapsedView ? 'checked' : ''}><span class="slider"></span></label></div>
         <div class="section-lbl">Agent Settings</div>
         <div class="setting-row"><span class="setting-lbl">Use LLM</span><label class="toggle"><input type="checkbox" id="togLLM" ${fs.useLLM ? 'checked' : ''}><span class="slider"></span></label></div>
         <div class="setting-row"><span class="setting-lbl">Use SerpAPI</span><label class="toggle"><input type="checkbox" id="togSerp" ${fs.useSerpAPI ? 'checked' : ''}><span class="slider"></span></label></div>
@@ -537,6 +549,7 @@ function renderFolderSettings(app) {
     });
   };
   bind('togCB', 'checkboxesEnabled');
+  bind('togCollapsed', 'collapsedView');
   bind('togLLM', 'useLLM');
   bind('togSerp', 'useSerpAPI');
   bind('togR1', 'wantsR1Response');
@@ -559,9 +572,17 @@ function renderAppSettings(app) {
         <div class="setting-row"><span class="setting-lbl">Text Scale: ${sv}%</span>
           <div class="scale-ctrl"><button class="scale-btn" id="scDown">−</button><span class="scale-val">${sv}%</span><button class="scale-btn" id="scUp">+</button></div>
         </div>
+        <div class="setting-row">
+          <span class="setting-lbl">Describe Prompt</span>
+          <button class="setting-btn" id="btnDescPrompt">Edit ▶</button>
+        </div>
       </div>
     </div>`;
   $('#btnBackS')?.addEventListener('click', () => { state.screen = 'home'; render(); });
+  $('#btnDescPrompt')?.addEventListener('click', () => {
+    state.editTarget = { type: 'describePrompt' };
+    state.screen = 'editModal'; render();
+  });
   $('#btnTheme')?.addEventListener('click', () => { state.screen = 'themeSelect'; render(); });
   $('#scDown')?.addEventListener('click', async () => {
     state.settings.textScale = Math.max(100, (state.settings.textScale || 100) - 10);
@@ -611,6 +632,7 @@ function renderEditModal(app) {
   else if (et.type === 'folder') { const f = state.folders.find(x => x.id === et.id); txt = f ? f.name : ''; title = 'Edit Folder'; }
   else if (et.type === 'masterPrompt') { const f = state.folders.find(x => x.id === et.id); txt = f ? (f.masterPrompt || '') : ''; title = 'Master Prompt'; }
   else if (et.type === 'newSnip') { txt = ''; title = 'New Snip'; }
+  else if (et.type === 'describePrompt') { txt = state.settings.describePrompt || DEFAULT_SETTINGS.describePrompt; title = 'Describe Prompt'; }
 
   app.innerHTML = `
     <div class="screen">
@@ -621,6 +643,7 @@ function renderEditModal(app) {
       </div>
       <div class="edit-area">
         ${et.type === 'imageCaption' ? '<div class="caption-hint">Describe this image…</div>' : ''}
+        ${et.type === 'describePrompt' ? '<div class="caption-hint">Prompt sent to Rabbit when Describe is pressed</div>' : ''}
         <textarea id="editText" class="edit-ta" placeholder="${et.type === 'imageCaption' ? 'What does this image show?' : 'Type or hold PTT to dictate…'}">${esc(txt)}</textarea>
       </div>
       ${et.type === 'imageCaption' ? '<button class="del-btn" id="btnDelCaption">🗑 Delete Caption</button>' : ''}
@@ -638,6 +661,7 @@ function renderEditModal(app) {
   $('#btnSaveEdit')?.addEventListener('click', () => {
     const et = state.editTarget;
     if (et && et.type === 'imageCaption') saveImageCaption();
+    else if (et && et.type === 'describePrompt') saveDescribePrompt();
     else saveEdit();
   });
   $('#btnDelSnip')?.addEventListener('click', deleteSnipFromEdit);
@@ -653,9 +677,17 @@ function renderEditModal(app) {
 function goBackFromEdit() {
   const et = state.editTarget;
   activeTextarea = null; state.editTarget = null;
+  if (et && et.type === 'describePrompt') { state.screen = 'settings'; render(); return; }
   state.screen = (et && (et.type === 'masterPrompt' || et.type === 'newSnip') && state.currentFolderId) ? 'folder'
     : state.currentFolderId ? 'folder' : 'home';
   render();
+}
+
+async function saveDescribePrompt() {
+  const text = ($('#editText')?.value || '').trim();
+  state.settings.describePrompt = text || DEFAULT_SETTINGS.describePrompt;
+  await saveSettings(state.settings);
+  activeTextarea = null; goBackFromEdit();
 }
 
 async function saveEdit() {
@@ -817,15 +849,15 @@ function viewImage(imgId) {
   btnBar.className = 'img-btn-bar';
 
   const descBtn = document.createElement('button');
-  descBtn.className = 'img-action-btn';
-  descBtn.textContent = 'Desc';
+  descBtn.className = 'img-action-btn img-wide-btn';
+  descBtn.textContent = 'Describe';
   descBtn.addEventListener('click', (e) => {
     e.stopPropagation();
     describeImageToCaption(im, captionEl, descBtn);
   });
 
   const sendBtn = document.createElement('button');
-  sendBtn.className = 'img-action-btn';
+  sendBtn.className = 'img-action-btn img-wide-btn';
   sendBtn.textContent = im.caption ? '📤 Send to Rabbit' : '📤 Send Image';
   sendBtn.addEventListener('click', (e) => {
     e.stopPropagation();
@@ -834,6 +866,9 @@ function viewImage(imgId) {
 
   const closeBtn = document.createElement('button');
   closeBtn.className = 'img-action-btn img-close-btn';
+  closeBtn.style.flex = '0 0 auto';
+  closeBtn.style.width = '44px';
+  closeBtn.style.minWidth = '44px';
   closeBtn.textContent = '✕';
   closeBtn.addEventListener('click', () => ov.remove());
 
@@ -919,7 +954,7 @@ async function describeImageToCaption(im, captionEl, descBtn) {
   descBtn.textContent = '…';
   descBtn.disabled = true;
 
-  const prompt = 'describe what you see in this image in full detail including any recognizable text';
+  const prompt = state.settings.describePrompt || DEFAULT_SETTINGS.describePrompt;
 
   if (typeof PluginMessageHandler !== 'undefined') {
     PluginMessageHandler.postMessage(JSON.stringify({
@@ -943,11 +978,11 @@ async function describeImageToCaption(im, captionEl, descBtn) {
         setTimeout(() => { captionEl.style.color = ''; }, 2000);
         showStatus('Caption saved');
       }
-      descBtn.textContent = 'Desc';
+      descBtn.textContent = 'Describe';
       descBtn.disabled = false;
     };
   } else {
-    descBtn.textContent = 'Desc';
+    descBtn.textContent = 'Describe';
     descBtn.disabled = false;
     showStatus('Agent unavailable');
   }
