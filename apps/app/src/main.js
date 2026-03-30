@@ -450,7 +450,7 @@ function renderFolder(app) {
           const num = pad(idx + 1);
           if (item.kind === 'snip') {
             const n = item.data;
-            return `<div class="list-item snip-item" data-id="${n.id}">
+            return `<div class="list-item snip-item${fs.collapsedView ? '' : ' snip-item--expanded'}" data-id="${n.id}">
               ${fs.checkboxesEnabled ? '<label class="snip-cb" data-sid="' + n.id + '"><input type="checkbox" ' + (n.checked ? 'checked' : '') + '/><span class="cb-mark"></span></label>' : ''}
               <span class="item-icon">📄</span>
               <span class="item-num">${num}</span>
@@ -968,8 +968,12 @@ async function describeImageToCaption(im, captionEl, descBtn) {
     const originalHandler = window.onPluginMessage;
     window.onPluginMessage = async function(data) {
       window.onPluginMessage = originalHandler;
-      const resp = data.data || data.message || '';
-      if (resp && typeof resp === 'string') {
+      // Accept response as plain string, or extract from object shape
+      let resp = null;
+      if (typeof data.data === 'string') resp = data.data;
+      else if (typeof data.message === 'string') resp = data.message;
+      else if (typeof data.data === 'object' && data.data !== null) resp = (typeof data.data.data === 'string' ? data.data.data : (typeof data.data.message === 'string' ? data.data.message : null));
+      if (resp && resp.trim()) {
         im.caption = resp.trim();
         im.name = im.caption;
         await dbPut('images', im);
@@ -977,8 +981,10 @@ async function describeImageToCaption(im, captionEl, descBtn) {
         captionEl.style.color = 'var(--accent)';
         setTimeout(() => { captionEl.style.color = ''; }, 2000);
         showStatus('Caption saved');
+      } else {
+        showStatus('No response');
       }
-      descBtn.textContent = 'Desc';
+      descBtn.textContent = 'Describe';
       descBtn.disabled = false;
     };
   } else {
