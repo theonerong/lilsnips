@@ -832,6 +832,23 @@ function viewImage(imgId) {
   const ov = document.createElement('div');
   ov.className = 'img-overlay';
 
+  // Top bar with delete button
+  const topBar = document.createElement('div');
+  topBar.className = 'img-top-bar';
+  const deleteBtn = document.createElement('button');
+  deleteBtn.className = 'img-action-btn img-close-btn';
+  deleteBtn.style.flex = '0 0 auto';
+  deleteBtn.style.width = '44px';
+  deleteBtn.style.minWidth = '44px';
+  deleteBtn.textContent = '🗑';
+  deleteBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    ov.remove();
+    deleteImage(im.id);
+  });
+  topBar.appendChild(deleteBtn);
+  ov.appendChild(topBar);
+
   let scale = 1, lastScale = 1, translateX = 0, translateY = 0, pivots = null;
 
   const img = document.createElement('img');
@@ -881,12 +898,16 @@ function viewImage(imgId) {
   ov.appendChild(btnBar);
   document.body.appendChild(ov);
 
+  let lastTouchX = 0, lastTouchY = 0;
+
   ov.addEventListener('touchstart', (e) => {
     if (e.touches.length === 2) {
       const dx = e.touches[0].clientX - e.touches[1].clientX;
       const dy = e.touches[0].clientY - e.touches[1].clientY;
       pivots = { dist: Math.hypot(dx, dy), scale };
     } else if (e.touches.length === 1) {
+      lastTouchX = e.touches[0].clientX;
+      lastTouchY = e.touches[0].clientY;
       img.style.transition = 'none';
     }
   }, { passive: true });
@@ -900,8 +921,12 @@ function viewImage(imgId) {
       img.style.transform = `translate(${translateX}px,${translateY}px) scale(${scale})`;
       img.style.cursor = 'grab';
     } else if (e.touches.length === 1 && scale > 1) {
-      translateX += e.touches[0].movementX;
-      translateY += e.touches[0].movementY;
+      const dx = e.touches[0].clientX - lastTouchX;
+      const dy = e.touches[0].clientY - lastTouchY;
+      translateX += dx;
+      translateY += dy;
+      lastTouchX = e.touches[0].clientX;
+      lastTouchY = e.touches[0].clientY;
       img.style.transform = `translate(${translateX}px,${translateY}px) scale(${scale})`;
     }
   }, { passive: true });
@@ -968,10 +993,11 @@ async function describeImageToCaption(im, captionEl, descBtn) {
     const originalHandler = window.onPluginMessage;
     window.onPluginMessage = async function(data) {
       window.onPluginMessage = originalHandler;
-      const resp = data.data || data.message || '';
-      if (resp && typeof resp === 'string') {
-        im.caption = resp.trim();
-        im.name = im.caption;
+      const raw = data.data || data.message || '';
+      const resp = (raw && typeof raw === 'string') ? raw.trim() : '';
+      if (resp) {
+        im.caption = resp;
+        im.name = resp;
         await dbPut('images', im);
         captionEl.textContent = im.caption;
         captionEl.style.color = 'var(--accent)';
