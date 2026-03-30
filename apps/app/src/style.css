@@ -31,6 +31,10 @@ html,body{width:100vw;height:100vh;background:var(--bg);color:var(--fg);font-fam
 .snip-item .item-icon{opacity:.6}
 .img-item .item-icon{opacity:.8}
 
+/* Selected snip highlight */
+.list-item.snip-item--selected{background:var(--accent);color:#000}
+.list-item.snip-item--selected .item-icon,.list-item.snip-item--selected .item-num{color:#000}
+
 /* Folder thumbnail items (expanded view) */
 .img-item--thumb{display:flex;flex-direction:column;align-items:stretch;padding:1.5vw 4vw;border-bottom:1px solid var(--card-border);cursor:pointer;transition:background .15s}
 .img-item--thumb:active{background:var(--card)}

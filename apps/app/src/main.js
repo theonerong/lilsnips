@@ -87,6 +87,8 @@ let state = {
   currentFolderId: null, settings: { ...DEFAULT_SETTINGS },
   editTarget: null, isRecording: false, statusMsg: '',
   lastAgentResponse: null,
+  selectedSnipIds: [],
+  pendingDescribeImageId: null,
   cameraActive: false, cameraPreviewData: null, cameraStream: null
 };
 let activeTextarea = null;
@@ -310,6 +312,25 @@ window.onPluginMessage = async function(data) {
     showStatus('Snip created'); return;
   }
 
+  // Describe image response — save as caption
+  if (state.pendingDescribeImageId) {
+    const resp = typeof data.data === 'string' ? data.data : (data.message || '');
+    if (resp && resp.trim()) {
+      const im = state.images.find(x => x.id === state.pendingDescribeImageId);
+      if (im) {
+        im.caption = resp.trim();
+        im.name = resp.trim();
+        dbPut('images', im).then(() => {
+          state.pendingDescribeImageId = null;
+          // Signal caption saved back to the overlay if still open
+          if (window._describeCallback) { window._describeCallback(resp.trim()); window._describeCallback = null; }
+          else { showStatus('Caption saved'); render(); }
+        });
+      } else { state.pendingDescribeImageId = null; }
+    } else { state.pendingDescribeImageId = null; }
+    return;
+  }
+
   // Agent response
   if (data.data || data.message) {
     const resp = typeof data.data === 'string' ? data.data : (data.message || '');
@@ -448,7 +469,7 @@ function renderFolder(app) {
           const num = pad(idx + 1);
           if (item.kind === 'snip') {
             const n = item.data;
-            return `<div class="list-item snip-item${fs.collapsedView ? '' : ' snip-item--expanded'}" data-id="${n.id}">
+            return `<div class="list-item snip-item${fs.collapsedView ? '' : ' snip-item--expanded'}${state.selectedSnipIds.includes(n.id) ? ' snip-item--selected' : ''}" data-id="${n.id}">
               ${fs.checkboxesEnabled ? '<label class="snip-cb" data-sid="' + n.id + '"><input type="checkbox" ' + (n.checked ? 'checked' : '') + '/><span class="cb-mark"></span></label>' : ''}
               <span class="item-icon">📄</span>
               <span class="item-num">${num}</span>
@@ -485,17 +506,41 @@ function renderFolder(app) {
       ${state.statusMsg ? '<div class="status-pill">' + esc(state.statusMsg) + '</div>' : ''}
     </div>`;
 
-  $('#btnBack')?.addEventListener('click', () => { state.screen = 'home'; state.currentFolderId = null; state.lastAgentResponse = null; render(); });
+  $('#btnBack')?.addEventListener('click', () => { state.screen = 'home'; state.currentFolderId = null; state.lastAgentResponse = null; state.selectedSnipIds = []; render(); });
   $('#btnFolderSettings')?.addEventListener('click', () => { state.screen = 'folderSettings'; render(); });
   $('#btnAddSnipF')?.addEventListener('click', () => addSnipManual(folder.id));
-  $('#btnSendAll')?.addEventListener('click', () => sendAllInFolder(folder.id));
+  $('#btnSendAll')?.addEventListener('click', () => {
+    const sel = state.selectedSnipIds;
+    if (sel.length > 0) {
+      state.selectedSnipIds = [];
+      sendSelectedSnips(sel, folder.id);
+    } else {
+      sendAllInFolder(folder.id);
+    }
+  });
   $('#btnEmail')?.addEventListener('click', () => emailFolder(folder.id));
   $('#mpEl')?.addEventListener('click', () => startEdit('masterPrompt', folder.id));
   $('#addMP')?.addEventListener('click', () => startEdit('masterPrompt', folder.id));
   $('#agentBar')?.addEventListener('click', captureAgentResponse);
 
+  // Restore scroll position
+  const restored = () => {
+    const sa = $('#folderList');
+    if (sa) sa.scrollTop = savedScrollTop;
+  };
+  setTimeout(restored, 0);
+
   document.querySelectorAll('#folderList .snip-item').forEach(el => {
-    el.addEventListener('click', (e) => { if (e.target.closest('.snip-cb')) return; sendSnip(el.dataset.id); });
+    el.addEventListener('click', (e) => {
+      if (e.target.closest('.snip-cb')) return;
+      const sid = el.dataset.id;
+      if (state.selectedSnipIds.includes(sid)) {
+        state.selectedSnipIds = state.selectedSnipIds.filter(id => id !== sid);
+      } else {
+        state.selectedSnipIds = [...state.selectedSnipIds, sid];
+      }
+      render();
+    });
     bindLongPress(el, () => startEdit('snip', el.dataset.id));
   });
   document.querySelectorAll('.snip-cb input').forEach(cb => {
@@ -732,7 +777,7 @@ function addSnipManual(folderId) {
 }
 
 function openFolder(id) {
-  state.currentFolderId = id; state.lastAgentResponse = null;
+  state.currentFolderId = id; state.lastAgentResponse = null; state.selectedSnipIds = [];
   state.screen = 'folder'; render();
 }
 
@@ -759,6 +804,26 @@ function sendSnip(snipId) {
     if (f && f.masterPrompt) msg = f.masterPrompt + '\n\n' + n.text;
   }
   sendToRabbit(msg);
+}
+
+async function sendSelectedSnips(snipIds, folderId) {
+  const folder = state.folders.find(f => f.id === folderId);
+  if (!folder) return;
+  const selSnips = state.snips.filter(n => snipIds.includes(n.id));
+  if (selSnips.length === 0) return;
+  const fs = getFolderSettings(folder);
+  const body = selSnips.map(n => '• ' + n.text).join('\n');
+  const msg = folder.masterPrompt ? folder.masterPrompt + '\n\n' + body : body;
+  if (typeof PluginMessageHandler !== 'undefined') {
+    PluginMessageHandler.postMessage(JSON.stringify({
+      message: msg,
+      pluginId: 'com.r1.pixelart',
+      imageBase64: null,
+      useLLM: fs.useLLM, useSerpAPI: fs.useSerpAPI,
+      wantsR1Response: fs.wantsR1Response, wantsJournalEntry: fs.wantsJournalEntry
+    }));
+    showStatus(`Sending ${selSnips.length} snip${selSnips.length > 1 ? 's' : ''}…`);
+  } else { showStatus('Agent unavailable'); }
 }
 
 function sendAllInFolder(folderId) {
@@ -980,33 +1045,31 @@ async function describeImageToCaption(im, captionEl, descBtn) {
   descBtn.disabled = true;
 
   const prompt = state.settings.describePrompt || DEFAULT_SETTINGS.describePrompt;
+  const fs = getActiveFolderSettings();
 
   if (typeof PluginMessageHandler !== 'undefined') {
+    state.pendingDescribeImageId = im.id;
+
+    // Wire up one-shot callback for caption update in the overlay
+    window._describeCallback = (captionText) => {
+      im.caption = captionText;
+      im.name = captionText;
+      captionEl.textContent = captionText;
+      captionEl.style.color = 'var(--accent)';
+      setTimeout(() => { captionEl.style.color = ''; }, 2000);
+      showStatus('Caption saved');
+      descBtn.textContent = 'Describe';
+      descBtn.disabled = false;
+      render(); // refresh folder view with new caption
+    };
+
     PluginMessageHandler.postMessage(JSON.stringify({
       message: prompt,
       pluginId: 'com.r1.pixelart',
       imageBase64: im.dataUrl,
       useLLM: true,
-      wantsR1Response: false, wantsJournalEntry: false
+      wantsR1Response: fs.wantsR1Response, wantsJournalEntry: fs.wantsJournalEntry
     }));
-
-    const originalHandler = window.onPluginMessage;
-    window.onPluginMessage = async function(data) {
-      window.onPluginMessage = originalHandler;
-      const raw = data.data || data.message || '';
-      const resp = (raw && typeof raw === 'string') ? raw.trim() : '';
-      if (resp) {
-        im.caption = resp;
-        im.name = resp;
-        await dbPut('images', im);
-        captionEl.textContent = im.caption;
-        captionEl.style.color = 'var(--accent)';
-        setTimeout(() => { captionEl.style.color = ''; }, 2000);
-        showStatus('Caption saved');
-      }
-      descBtn.textContent = 'Describe';
-      descBtn.disabled = false;
-    };
   } else {
     descBtn.textContent = 'Describe';
     descBtn.disabled = false;
@@ -1050,12 +1113,32 @@ function showStatus(msg) {
 function bindLongPress(el, cb, dur) {
   if (!el) return;
   dur = dur || 600;
-  let t = null, fired = false;
-  const start = () => { fired = false; t = setTimeout(() => { fired = true; cb(); }, dur); };
-  const end = (e) => { clearTimeout(t); if (fired) { e.preventDefault(); e.stopPropagation(); } };
+  let t = null, fired = false, startX = 0, startY = 0;
+
+  const start = (e) => {
+    fired = false;
+    startX = e.touches ? e.touches[0].clientX : e.clientX;
+    startY = e.touches ? e.touches[0].clientY : e.clientY;
+    t = setTimeout(() => {
+      // Only fire if finger hasn't moved more than 10px from start
+      fired = true;
+      cb();
+    }, dur);
+  };
+  const move = (e) => {
+    if (!t) return;
+    const curX = e.touches ? e.touches[0].clientX : e.clientX;
+    const curY = e.touches ? e.touches[0].clientY : e.clientY;
+    if (Math.abs(curX - startX) > 10 || Math.abs(curY - startY) > 10) {
+      clearTimeout(t); t = null; fired = false;
+    }
+  };
+  const end = (e) => { clearTimeout(t); t = null; };
   el.addEventListener('touchstart', start, { passive: true });
+  el.addEventListener('touchmove', move, { passive: true });
   el.addEventListener('touchend', end); el.addEventListener('touchcancel', end);
-  el.addEventListener('mousedown', start); el.addEventListener('mouseup', end); el.addEventListener('mouseleave', end);
+  el.addEventListener('mousedown', start);
+  el.addEventListener('mouseup', end); el.addEventListener('mouseleave', end);
 }
 
 // ============================================================
