@@ -901,14 +901,14 @@ function viewImage(imgId) {
 function sendImageToRabbit(im) {
   const fs = getActiveFolderSettings();
   const caption = im.caption || '';
-  // Image data first, caption directive second — agent must see and process
-  // the image before encountering the caption instruction
-  const msg = caption
-    ? `[Image data: ${im.dataUrl}]\n\n[Image caption: ${caption}]`
-    : `[Image data: ${im.dataUrl}]`;
+  // imageBase64 as separate top-level field — Rabbit's handler processes the
+  // image attachment before reading the message field (matching r1magickam pattern)
   if (typeof PluginMessageHandler !== 'undefined') {
     PluginMessageHandler.postMessage(JSON.stringify({
-      message: msg, useLLM: true,
+      message: caption || 'Here is a photo.',
+      pluginId: 'com.r1.pixelart',
+      imageBase64: im.dataUrl,
+      useLLM: true,
       wantsR1Response: fs.wantsR1Response, wantsJournalEntry: fs.wantsJournalEntry
     }));
     showStatus('Sending to Rabbit…');
@@ -919,15 +919,17 @@ async function describeImageToCaption(im, captionEl, descBtn) {
   descBtn.textContent = '…';
   descBtn.disabled = true;
 
-  const msg = 'describe what you see in this image in full detail including any recognizable text';
+  const prompt = 'describe what you see in this image in full detail including any recognizable text';
 
   if (typeof PluginMessageHandler !== 'undefined') {
     PluginMessageHandler.postMessage(JSON.stringify({
-      message: msg, useLLM: true,
+      message: prompt,
+      pluginId: 'com.r1.pixelart',
+      imageBase64: im.dataUrl,
+      useLLM: true,
       wantsR1Response: false, wantsJournalEntry: false
     }));
 
-    // Store a one-shot listener — next agent response fills the caption
     const originalHandler = window.onPluginMessage;
     window.onPluginMessage = async function(data) {
       window.onPluginMessage = originalHandler;
