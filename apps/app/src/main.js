@@ -44,7 +44,7 @@ const dbDelete = (s, k) => dbOp(s, 'readwrite', st => st.delete(k));
 
 // ---- Default Settings ----
 
-const DEFAULT_SETTINGS = { theme: 'default', textScale: 100, debugMode: false, describePrompt: "describe what you see in this image in as much detail as possible, including any readable text, and do not mention anything that isn't there and do not ask any followup questions, your response will be used as a caption for the image. " };
+const DEFAULT_SETTINGS = { theme: 'default', textScale: 100, debugMode: false };
 const DEFAULT_FOLDER_SETTINGS = {
   useLLM: true, useSerpAPI: false, wantsR1Response: true,
   wantsJournalEntry: false, checkboxesEnabled: false, collapsedView: false
@@ -88,7 +88,7 @@ let state = {
   editTarget: null, isRecording: false, statusMsg: '',
   lastAgentResponse: null,
   selectedSnipIds: [],
-  pendingDescribeImageId: null,
+  savedScrollTop: 0,
   debugLogs: [],
   cameraActive: false, cameraPreviewData: null, cameraStream: null
 };
@@ -339,25 +339,6 @@ window.onPluginMessage = async function(data) {
     showStatus('Snip created'); return;
   }
 
-  // Describe image response — save as caption
-  if (state.pendingDescribeImageId) {
-    const resp = typeof data.data === 'string' ? data.data : (data.message || '');
-        if (resp && resp.trim()) {
-      const im = state.images.find(x => x.id === state.pendingDescribeImageId);
-      if (im) {
-        im.caption = resp.trim();
-        im.name = resp.trim();
-        dbPut('images', im).then(() => {
-          state.pendingDescribeImageId = null;
-          // Signal caption saved back to the overlay if still open
-          if (window._describeCallback) { window._describeCallback(resp.trim()); window._describeCallback = null; }
-          else { showStatus('Caption saved'); render(); }
-        });
-      } else { state.pendingDescribeImageId = null; }
-    } else { state.pendingDescribeImageId = null; }
-    return;
-  }
-
   // Agent response
   if (data.data || data.message) {
     const resp = typeof data.data === 'string' ? data.data : (data.message || '');
@@ -553,9 +534,13 @@ function renderFolder(app) {
   // Restore scroll position
   const restored = () => {
     const sa = $('#folderList');
-    if (sa) sa.scrollTop = savedScrollTop;
+    if (sa) sa.scrollTop = state.savedScrollTop;
   };
   setTimeout(restored, 0);
+
+  // Capture scroll position before navigating away
+  const sa = $('#folderList');
+  if (sa) { state.savedScrollTop = sa.scrollTop; }
 
   document.querySelectorAll('#folderList .snip-item').forEach(el => {
     el.addEventListener('click', (e) => {
@@ -647,18 +632,10 @@ function renderAppSettings(app) {
         <div class="setting-row"><span class="setting-lbl">Debug Mode</span><label class="toggle"><input type="checkbox" id="togDebug" ${s.debugMode ? 'checked' : ''}><span class="slider"></span></label></div>
         <div class="setting-row"><button class="tool-btn" id="btnEmailLogs" ${s.debugMode ? '' : 'disabled'}>Email Logs (${state.debugLogs.length})</button></div>
         ${s.debugMode ? '<div class="setting-row"><span class="setting-lbl">Last log:</span><span class="setting-val">' + (state.debugLogs.length ? state.debugLogs[state.debugLogs.length-1].data.slice(0,50) : 'none') + '</span></div>' : ''}
-        <div class="setting-row">
-          <span class="setting-lbl">Describe Prompt</span>
-          <button class="setting-btn" id="btnDescPrompt">Edit ▶</button>
-        </div>
       </div>
     </div>`;
   $('#btnBackS')?.addEventListener('click', () => { state.screen = 'home'; render(); });
-  $('#btnDescPrompt')?.addEventListener('click', () => {
-    state.editTarget = { type: 'describePrompt' };
-    state.screen = 'editModal'; render();
-  });
-  $('#btnTheme')?.addEventListener('click', () => { state.screen = 'themeSelect'; render(); });
+$('#btnTheme')?.addEventListener('click', () => { state.screen = 'themeSelect'; render(); });
   const bindToggle = (id, key) => {
     const el = $(`#${id}`);
     if (!el) return;
@@ -714,7 +691,6 @@ function renderEditModal(app) {
   else if (et.type === 'folder') { const f = state.folders.find(x => x.id === et.id); txt = f ? f.name : ''; title = 'Edit Folder'; }
   else if (et.type === 'masterPrompt') { const f = state.folders.find(x => x.id === et.id); txt = f ? (f.masterPrompt || '') : ''; title = 'Master Prompt'; }
   else if (et.type === 'newSnip') { txt = ''; title = 'New Snip'; }
-  else if (et.type === 'describePrompt') { txt = state.settings.describePrompt || DEFAULT_SETTINGS.describePrompt; title = 'Describe Prompt'; }
 
   app.innerHTML = `
     <div class="screen">
@@ -724,8 +700,6 @@ function renderEditModal(app) {
         <button class="icon-btn" id="btnSaveEdit">💾</button>
       </div>
       <div class="edit-area">
-        ${et.type === 'imageCaption' ? '<div class="caption-hint">Describe this image…</div>' : ''}
-        ${et.type === 'describePrompt' ? '<div class="caption-hint">Prompt sent to Rabbit when Describe is pressed</div>' : ''}
         <textarea id="editText" class="edit-ta" placeholder="${et.type === 'imageCaption' ? 'What does this image show?' : 'Type or hold PTT to dictate…'}">${esc(txt)}</textarea>
       </div>
       ${et.type === 'imageCaption' ? '<button class="del-btn" id="btnDelCaption">🗑 Delete Caption</button>' : ''}
@@ -743,8 +717,7 @@ function renderEditModal(app) {
   $('#btnSaveEdit')?.addEventListener('click', () => {
     const et = state.editTarget;
     if (et && et.type === 'imageCaption') saveImageCaption();
-    else if (et && et.type === 'describePrompt') saveDescribePrompt();
-    else saveEdit();
+  else saveEdit();
   });
   $('#btnDelSnip')?.addEventListener('click', deleteSnipFromEdit);
   $('#btnDelCaption')?.addEventListener('click', async () => {
@@ -759,17 +732,9 @@ function renderEditModal(app) {
 function goBackFromEdit() {
   const et = state.editTarget;
   activeTextarea = null; state.editTarget = null;
-  if (et && et.type === 'describePrompt') { state.screen = 'settings'; render(); return; }
-  state.screen = (et && (et.type === 'masterPrompt' || et.type === 'newSnip') && state.currentFolderId) ? 'folder'
+state.screen = (et && (et.type === 'masterPrompt' || et.type === 'newSnip') && state.currentFolderId) ? 'folder'
     : state.currentFolderId ? 'folder' : 'home';
   render();
-}
-
-async function saveDescribePrompt() {
-  const text = ($('#editText')?.value || '').trim();
-  state.settings.describePrompt = text || DEFAULT_SETTINGS.describePrompt;
-  await saveSettings(state.settings);
-  activeTextarea = null; goBackFromEdit();
 }
 
 async function saveEdit() {
@@ -871,8 +836,10 @@ function sendAllInFolder(folderId) {
   if (!snips.length && !imgs.length) { showStatus('No snips to send'); return; }
   const body = snips.map((n, i) => pad(i + 1) + '. ' + n.text).join('\n\n');
   const imgMsgs = imgs.map((im, i) => {
-    const cap = im.caption ? ` [Caption: ${im.caption}]` : '';
-    return `[Image ${pad(snips.length + i + 1)}: ${im.dataUrl}]${cap}`;
+    if (im.caption) {
+      return `${pad(snips.length + i + 1)}. [Image caption] ${im.caption}`;
+    }
+    return `${pad(snips.length + i + 1)}. [Image] (no caption)`;
   }).join('\n\n');
   sendToRabbit(f.masterPrompt ? f.masterPrompt + '\n\n' + body + (imgMsgs ? '\n\n' + imgMsgs : '') : body + (imgMsgs ? '\n\n' + imgMsgs : ''));
 }
@@ -982,8 +949,7 @@ function viewImage(imgId) {
   descBtn.textContent = 'Describe';
   descBtn.addEventListener('click', (e) => {
     e.stopPropagation();
-    describeImageToCaption(im, captionEl, descBtn);
-  });
+});
 
   const sendBtn = document.createElement('button');
   sendBtn.className = 'img-action-btn img-wide-btn';
@@ -1001,7 +967,6 @@ function viewImage(imgId) {
   closeBtn.textContent = '✕';
   closeBtn.addEventListener('click', () => ov.remove());
 
-  btnBar.appendChild(descBtn);
   btnBar.appendChild(sendBtn);
   btnBar.appendChild(closeBtn);
 
@@ -1073,11 +1038,10 @@ function viewImage(imgId) {
 function sendImageToRabbit(im) {
   const fs = getActiveFolderSettings();
   const caption = im.caption || '';
-  // imageBase64 as separate top-level field — Rabbit's handler processes the
-  // image attachment before reading the message field (matching r1magickam pattern)
+  const message = caption || 'Here is a photo.';
   if (typeof PluginMessageHandler !== 'undefined') {
     PluginMessageHandler.postMessage(JSON.stringify({
-      message: caption || 'Here is a photo.',
+      message,
       pluginId: 'com.r1.pixelart',
       imageBase64: im.dataUrl,
       useLLM: true,
@@ -1087,44 +1051,7 @@ function sendImageToRabbit(im) {
   } else { showStatus('Agent unavailable'); }
 }
 
-async function describeImageToCaption(im, captionEl, descBtn) {
-  descBtn.textContent = '…';
-  descBtn.disabled = true;
 
-  const prompt = state.settings.describePrompt || DEFAULT_SETTINGS.describePrompt;
-
-  if (typeof PluginMessageHandler !== 'undefined') {
-    state.pendingDescribeImageId = im.id;
-
-    // Wire up one-shot callback for caption update in the overlay
-    window._describeCallback = (captionText) => {
-      im.caption = captionText;
-      im.name = captionText;
-      captionEl.textContent = captionText;
-      captionEl.style.color = 'var(--accent)';
-      setTimeout(() => { captionEl.style.color = ''; }, 2000);
-      showStatus('Caption saved');
-      descBtn.textContent = 'Describe';
-      descBtn.disabled = false;
-      render(); // refresh folder view with new caption
-    };
-
-    PluginMessageHandler.postMessage(JSON.stringify({
-      message: prompt,
-      pluginId: 'com.r1.pixelart',
-      imageBase64: im.dataUrl
-    }));
-  } else {
-    descBtn.textContent = 'Describe';
-    descBtn.disabled = false;
-    showStatus('Agent unavailable');
-  }
-}
-
-async function deleteImage(imgId) {
-  state.images = state.images.filter(im => im.id !== imgId);
-  await dbDelete('images', imgId); showStatus('Image deleted'); render();
-}
 
 function editImageCaption(imgId) {
   const im = state.images.find(x => x.id === imgId);
