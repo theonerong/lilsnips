@@ -625,7 +625,8 @@ function renderAppSettings(app) {
           <div class="scale-ctrl"><button class="scale-btn" id="scDown">−</button><span class="scale-val">${sv}%</span><button class="scale-btn" id="scUp">+</button></div>
         </div>
         <div class="setting-row"><span class="setting-lbl">Debug Mode</span><label class="toggle"><input type="checkbox" id="togDebug" ${s.debugMode ? 'checked' : ''}><span class="slider"></span></label></div>
-        ${s.debugMode ? '<div class="setting-row"><button class="tool-btn" id="btnEmailLogs">&#128231; Email Logs</button></div>' : ''}
+        <div class="setting-row"><button class="tool-btn" id="btnEmailLogs" ${s.debugMode ? '' : 'disabled'}>Email Logs (${state.debugLogs.length})</button></div>
+        ${s.debugMode ? '<div class="setting-row"><span class="setting-lbl">Last log:</span><span class="setting-val">' + (state.debugLogs.length ? state.debugLogs[state.debugLogs.length-1].data.slice(0,50) : 'none') + '</span></div>' : ''}
         <div class="setting-row">
           <span class="setting-lbl">Describe Prompt</span>
           <button class="setting-btn" id="btnDescPrompt">Edit ▶</button>
@@ -644,7 +645,7 @@ function renderAppSettings(app) {
     el.addEventListener('change', async () => { state.settings[key] = el.checked; await saveSettings(state.settings); });
   };
   bindToggle('togDebug', 'debugMode');
-  $('#btnEmailLogs')?.addEventListener('click', () => emailLogs());
+  $('#btnEmailLogs')?.addEventListener('click', () => { console.log('[DEBUG] Email Logs tapped'); emailLogs(); });
   $('#scDown')?.addEventListener('click', async () => {
     state.settings.textScale = Math.max(100, (state.settings.textScale || 100) - 10);
     applyTextScale(state.settings.textScale); await saveSettings(state.settings); render();
@@ -875,7 +876,7 @@ async function captureAgentResponse() {
 }
 
 async function emailLogs() {
-  if (!state.debugLogs.length) { showStatus('No logs'); return; }
+  console.log('[DEBUG] emailLogs called, logs:', state.debugLogs.length, 'PluginMessageHandler:', typeof PluginMessageHandler);
   const body = 'Lil Snips Debug Logs\n\n' + state.debugLogs.map(l => '[' + new Date(l.ts).toLocaleTimeString() + ']\n' + l.data).join('\n\n---\n\n');
   if (typeof PluginMessageHandler !== 'undefined') {
     PluginMessageHandler.postMessage(JSON.stringify({ message: body, pluginId: 'com.r1.pixelart', useLLM: false, wantsR1Response: false, wantsJournalEntry: false }));
