@@ -492,6 +492,9 @@ window.onPluginMessage = async function(data) {
     showStatus('Snip created'); return;
   }
 
+  // Skip sttStarted control messages
+  if (data.type === 'sttStarted') { return; }
+
   // Agent response
   if (data.data || data.message) {
     const resp = typeof data.data === 'string' ? data.data : (data.message || '');
@@ -975,7 +978,7 @@ async function sendSelectedSnips(snipIds, folderId) {
       pluginId: 'com.r1.pixelart',
       imageBase64: null,
       useLLM: fs.useLLM, useSerpAPI: fs.useSerpAPI,
-      wantsR1Response: false, wantsJournalEntry: false
+      wantsR1Response: fs.wantsR1Response, wantsJournalEntry: fs.wantsJournalEntry
     }));
     showStatus(`Sending ${selSnips.length} snip${selSnips.length > 1 ? 's' : ''}…`);
   } else { showStatus('Agent unavailable'); }
@@ -994,11 +997,15 @@ function sendAllInFolder(folderId) {
     }
     return `${pad(snips.length + i + 1)}. [Image] (no caption)`;
   }).join('\n\n');
-  sendToRabbit(f.masterPrompt ? f.masterPrompt + '\n\n' + body + (imgMsgs ? '\n\n' + imgMsgs : '') : body + (imgMsgs ? '\n\n' + imgMsgs : ''));
+  sendToRabbit(f.masterPrompt ? f.masterPrompt + '\n\n' + body + (imgMsgs ? '\n\n' + imgMsgs : '') : body + (imgMsgs ? '\n\n' + imgMsgs : ''), true);
 }
 
-function sendToRabbit(message) {
+function sendToRabbit(message, noPrefix) {
   const fs = getActiveFolderSettings();
+  if (!noPrefix) {
+    const NO_SEARCH = '\uD83D\uDEA8 DO NOT search the internet. DO NOT save notes or create reminders. DO NOT create journal entries.';
+    message = message.startsWith(NO_SEARCH) ? message : NO_SEARCH + '\n\n' + message;
+  }
   if (typeof PluginMessageHandler !== 'undefined') {
     PluginMessageHandler.postMessage(JSON.stringify({
       message, useLLM: fs.useLLM, useSerpAPI: fs.useSerpAPI,
@@ -1019,7 +1026,8 @@ async function emailLogs() {
   if (!state.debugLogs.length) { showStatus('No logs'); return; }
   const body = 'Lil Snips Debug Logs\n\n' + state.debugLogs.map(l => '[' + l.type + ' ' + new Date(l.ts).toLocaleTimeString() + ']\n' + l.data).join('\n\n---\n\n');
   if (typeof PluginMessageHandler !== 'undefined') {
-    PluginMessageHandler.postMessage(JSON.stringify({ message: 'Email this debug log to my Rabbit Hole:\n\n' + body, pluginId: 'com.r1.pixelart', useLLM: true, wantsR1Response: false, wantsJournalEntry: false }));
+    const prompt = '\uD83D\uDEA8 DO NOT SEARCH. Email this debug log to my Rabbit Hole:\n\n' + body;
+    PluginMessageHandler.postMessage(JSON.stringify({ message: prompt, pluginId: 'com.r1.pixelart', useLLM: true, wantsR1Response: false, wantsJournalEntry: false }));
     showStatus('Sending logs\u2026');
     state.debugLogs = [];
   } else { showStatus('Agent unavailable'); }
@@ -1096,13 +1104,6 @@ function viewImage(imgId) {
 
   const btnBar = document.createElement('div');
   btnBar.className = 'img-btn-bar';
-
-  const descBtn = document.createElement('button');
-  descBtn.className = 'img-action-btn img-wide-btn';
-  descBtn.textContent = 'Describe';
-  descBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-});
 
   const sendBtn = document.createElement('button');
   sendBtn.className = 'img-action-btn img-wide-btn';
