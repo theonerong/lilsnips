@@ -293,14 +293,34 @@ window.addEventListener('longPressEnd', () => {
 });
 
 // ============================================================
+// PluginMessageHandler wrapper — log ALL outgoing postMessage calls
+// ============================================================
+(function() {
+  const _orig = window.PluginMessageHandler?.postMessage?.bind(window.PluginMessageHandler);
+  if (!_orig) return;
+  window.PluginMessageHandler.postMessage = function(msg) {
+    try {
+      const parsed = typeof msg === 'string' ? JSON.parse(msg) : msg;
+      if (state.settings.debugMode) {
+        const entry = { ts: Date.now(), type: 'outgoing', data: JSON.stringify(parsed).slice(0, 400) };
+        state.debugLogs.push(entry);
+        if (state.debugLogs.length > 200) state.debugLogs = state.debugLogs.slice(-100);
+      }
+    } catch(e) {}
+    return _orig.call(this, msg);
+  };
+})();
+
+// ============================================================
 // Plugin Message Handler — Incoming
 // ============================================================
 
 window.onPluginMessage = async function(data) {
-  // Debug logging
+  // Debug logging - incoming
   if (state.settings.debugMode) {
-    state.debugLogs.push({ ts: Date.now(), data: JSON.stringify(data).slice(0, 500) });
-    if (state.debugLogs.length > 100) state.debugLogs = state.debugLogs.slice(-50);
+    const entry = { ts: Date.now(), type: 'incoming', data: JSON.stringify(data).slice(0, 400) };
+    state.debugLogs.push(entry);
+    if (state.debugLogs.length > 200) state.debugLogs = state.debugLogs.slice(-100);
   }
 
   // STT result
@@ -876,10 +896,10 @@ async function captureAgentResponse() {
 }
 
 async function emailLogs() {
-  console.log('[DEBUG] emailLogs called, logs:', state.debugLogs.length, 'PluginMessageHandler:', typeof PluginMessageHandler);
-  const body = 'Lil Snips Debug Logs\n\n' + state.debugLogs.map(l => '[' + new Date(l.ts).toLocaleTimeString() + ']\n' + l.data).join('\n\n---\n\n');
+  if (!state.debugLogs.length) { showStatus('No logs'); return; }
+  const body = 'Lil Snips Debug Logs\n\n' + state.debugLogs.map(l => '[' + l.type + ' ' + new Date(l.ts).toLocaleTimeString() + ']\n' + l.data).join('\n\n---\n\n');
   if (typeof PluginMessageHandler !== 'undefined') {
-    PluginMessageHandler.postMessage(JSON.stringify({ message: body, pluginId: 'com.r1.pixelart', useLLM: false, wantsR1Response: false, wantsJournalEntry: false }));
+    PluginMessageHandler.postMessage(JSON.stringify({ message: 'Email this debug log to my Rabbit Hole:\n\n' + body, pluginId: 'com.r1.pixelart', useLLM: true, wantsR1Response: false, wantsJournalEntry: false }));
     showStatus('Sending logs\u2026');
     state.debugLogs = [];
   } else { showStatus('Agent unavailable'); }
@@ -1164,6 +1184,32 @@ function bindLongPress(el, cb, dur) {
   el.addEventListener('mousedown', start);
   el.addEventListener('mouseup', end); el.addEventListener('mouseleave', end);
 }
+
+// ============================================================
+// Global Error Handler
+// ============================================================
+window.addEventListener('error', (e) => {
+  if (state.settings.debugMode) {
+    state.debugLogs.push({
+      ts: Date.now(), type: 'error',
+      data: (e.message || '') + ' @ ' + (e.filename || '').split('/').pop() + ':' + (e.lineno || 0)
+    });
+    if (state.debugLogs.length > 200) state.debugLogs = state.debugLogs.slice(-100);
+  }
+});
+
+// ============================================================
+// Global Error Handler
+// ============================================================
+window.addEventListener('error', (e) => {
+  if (state.settings.debugMode) {
+    state.debugLogs.push({
+      ts: Date.now(), type: 'error',
+      data: (e.message || '') + ' @ ' + (e.filename || '').split('/').pop() + ':' + (e.lineno || 0)
+    });
+    if (state.debugLogs.length > 200) state.debugLogs = state.debugLogs.slice(-100);
+  }
+});
 
 // ============================================================
 // Init
