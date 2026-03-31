@@ -468,6 +468,7 @@ window.onPluginMessage = async function(data) {
   // Describe image response — save as caption
   if (state.pendingDescribeImageId) {
     const resp = typeof data.data === 'string' ? data.data : (data.message || '');
+    console.log('[DEBUG] describe response:', JSON.stringify(data).slice(0, 300), '| resp:', (resp||'').slice(0,100));
     if (resp && resp.trim()) {
       const im = state.images.find(x => x.id === state.pendingDescribeImageId);
       if (im) {
@@ -1202,9 +1203,11 @@ async function describeImageToCaption(im, captionEl, descBtn) {
 
   if (typeof PluginMessageHandler !== 'undefined') {
     state.pendingDescribeImageId = im.id;
+    console.log('[DEBUG] describeImageToCaption, pendingDescribeImageId set to:', im.id);
 
     // Wire up one-shot callback for caption update in the overlay
     window._describeCallback = (captionText) => {
+      console.log('[DEBUG] _describeCallback called with:', captionText);
       im.caption = captionText;
       im.name = captionText;
       captionEl.textContent = captionText;
