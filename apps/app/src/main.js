@@ -44,7 +44,7 @@ const dbDelete = (s, k) => dbOp(s, 'readwrite', st => st.delete(k));
 
 // ---- Default Settings ----
 
-const DEFAULT_SETTINGS = { theme: 'default', textScale: 100, describePrompt: "describe what you see in this image in as much detail as possible, including any readable text, and do not mention anything that isn't there and do not ask any followup questions, your response will be used as a caption for the image. " };
+const DEFAULT_SETTINGS = { theme: 'default', textScale: 100, debugMode: false, describePrompt: "describe what you see in this image in as much detail as possible, including any readable text, and do not mention anything that isn't there and do not ask any followup questions, your response will be used as a caption for the image. " };
 const DEFAULT_FOLDER_SETTINGS = {
   useLLM: true, useSerpAPI: false, wantsR1Response: true,
   wantsJournalEntry: false, checkboxesEnabled: false, collapsedView: false
@@ -89,6 +89,7 @@ let state = {
   lastAgentResponse: null,
   selectedSnipIds: [],
   pendingDescribeImageId: null,
+  debugLogs: [],
   cameraActive: false, cameraPreviewData: null, cameraStream: null
 };
 let activeTextarea = null;
@@ -296,6 +297,12 @@ window.addEventListener('longPressEnd', () => {
 // ============================================================
 
 window.onPluginMessage = async function(data) {
+  // Debug logging
+  if (state.settings.debugMode) {
+    state.debugLogs.push({ ts: Date.now(), data: JSON.stringify(data).slice(0, 500) });
+    if (state.debugLogs.length > 100) state.debugLogs = state.debugLogs.slice(-50);
+  }
+
   // STT result
   if (data.type === 'sttEnded' && data.transcript) {
     const text = data.transcript.trim();
@@ -315,8 +322,7 @@ window.onPluginMessage = async function(data) {
   // Describe image response — save as caption
   if (state.pendingDescribeImageId) {
     const resp = typeof data.data === 'string' ? data.data : (data.message || '');
-    console.log('[DEBUG] describe response:', JSON.stringify(data).slice(0, 300), '| resp:', (resp||'').slice(0,100));
-    if (resp && resp.trim()) {
+        if (resp && resp.trim()) {
       const im = state.images.find(x => x.id === state.pendingDescribeImageId);
       if (im) {
         im.caption = resp.trim();
@@ -618,6 +624,8 @@ function renderAppSettings(app) {
         <div class="setting-row"><span class="setting-lbl">Text Scale: ${sv}%</span>
           <div class="scale-ctrl"><button class="scale-btn" id="scDown">−</button><span class="scale-val">${sv}%</span><button class="scale-btn" id="scUp">+</button></div>
         </div>
+        <div class="setting-row"><span class="setting-lbl">Debug Mode</span><label class="toggle"><input type="checkbox" id="togDebug" ${s.debugMode ? 'checked' : ''}><span class="slider"></span></label></div>
+        ${s.debugMode ? '<div class="setting-row"><button class="tool-btn" id="btnEmailLogs">&#128231; Email Logs</button></div>' : ''}
         <div class="setting-row">
           <span class="setting-lbl">Describe Prompt</span>
           <button class="setting-btn" id="btnDescPrompt">Edit ▶</button>
@@ -630,6 +638,13 @@ function renderAppSettings(app) {
     state.screen = 'editModal'; render();
   });
   $('#btnTheme')?.addEventListener('click', () => { state.screen = 'themeSelect'; render(); });
+  const bindToggle = (id, key) => {
+    const el = $(`#${id}`);
+    if (!el) return;
+    el.addEventListener('change', async () => { state.settings[key] = el.checked; await saveSettings(state.settings); });
+  };
+  bindToggle('togDebug', 'debugMode');
+  $('#btnEmailLogs')?.addEventListener('click', () => emailLogs());
   $('#scDown')?.addEventListener('click', async () => {
     state.settings.textScale = Math.max(100, (state.settings.textScale || 100) - 10);
     applyTextScale(state.settings.textScale); await saveSettings(state.settings); render();
@@ -821,7 +836,7 @@ async function sendSelectedSnips(snipIds, folderId) {
       pluginId: 'com.r1.pixelart',
       imageBase64: null,
       useLLM: fs.useLLM, useSerpAPI: fs.useSerpAPI,
-      wantsR1Response: fs.wantsR1Response, wantsJournalEntry: fs.wantsJournalEntry
+      wantsR1Response: false, wantsJournalEntry: false
     }));
     showStatus(`Sending ${selSnips.length} snip${selSnips.length > 1 ? 's' : ''}…`);
   } else { showStatus('Agent unavailable'); }
@@ -857,6 +872,16 @@ async function captureAgentResponse() {
   const n = { id: uid(), text: state.lastAgentResponse, folderId: state.currentFolderId || null, checked: false, createdAt: Date.now(), updatedAt: Date.now() };
   state.snips.push(n); await dbPut('snips', n);
   state.lastAgentResponse = null; showStatus('Response saved');
+}
+
+async function emailLogs() {
+  if (!state.debugLogs.length) { showStatus('No logs'); return; }
+  const body = 'Lil Snips Debug Logs\n\n' + state.debugLogs.map(l => '[' + new Date(l.ts).toLocaleTimeString() + ']\n' + l.data).join('\n\n---\n\n');
+  if (typeof PluginMessageHandler !== 'undefined') {
+    PluginMessageHandler.postMessage(JSON.stringify({ message: body, pluginId: 'com.r1.pixelart', useLLM: false, wantsR1Response: false, wantsJournalEntry: false }));
+    showStatus('Sending logs\u2026');
+    state.debugLogs = [];
+  } else { showStatus('Agent unavailable'); }
 }
 
 function emailFolder(folderId) {
@@ -1046,15 +1071,12 @@ async function describeImageToCaption(im, captionEl, descBtn) {
   descBtn.disabled = true;
 
   const prompt = state.settings.describePrompt || DEFAULT_SETTINGS.describePrompt;
-  const fs = getActiveFolderSettings();
 
   if (typeof PluginMessageHandler !== 'undefined') {
     state.pendingDescribeImageId = im.id;
-    console.log('[DEBUG] describeImageToCaption, pendingDescribeImageId set to:', im.id);
 
     // Wire up one-shot callback for caption update in the overlay
     window._describeCallback = (captionText) => {
-      console.log('[DEBUG] _describeCallback called with:', captionText);
       im.caption = captionText;
       im.name = captionText;
       captionEl.textContent = captionText;
@@ -1069,9 +1091,7 @@ async function describeImageToCaption(im, captionEl, descBtn) {
     PluginMessageHandler.postMessage(JSON.stringify({
       message: prompt,
       pluginId: 'com.r1.pixelart',
-      imageBase64: im.dataUrl,
-      useLLM: true,
-      wantsR1Response: fs.wantsR1Response, wantsJournalEntry: fs.wantsJournalEntry
+      imageBase64: im.dataUrl
     }));
   } else {
     descBtn.textContent = 'Describe';
