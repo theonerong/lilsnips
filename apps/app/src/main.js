@@ -2,6 +2,9 @@
 // Lil Snips — R1 Creation Plugin
 // ============================================================
 
+// ---- Build Timestamp (injected by Vite plugin) ----
+// __BUILD_TS__ is injected at build time as 'YYYYMMDDhhmmss'
+
 // ---- IndexedDB Storage ----
 
 const DB_NAME = 'lilsnips';
@@ -551,10 +554,16 @@ function renderFolder(app) {
       const sid = el.dataset.id;
       if (state.selectedSnipIds.includes(sid)) {
         state.selectedSnipIds = state.selectedSnipIds.filter(id => id !== sid);
+        el.classList.remove('snip-item--selected');
       } else {
         state.selectedSnipIds = [...state.selectedSnipIds, sid];
+        el.classList.add('snip-item--selected');
       }
-      render();
+      // Update Send button without re-rendering
+      const btn = document.getElementById('btnSendAll');
+      if (btn) btn.textContent = state.selectedSnipIds.length > 0
+        ? `Send ${state.selectedSnipIds.length}`
+        : 'Send All';
     });
     bindLongPress(el, () => startEdit('snip', el.dataset.id));
   });
@@ -635,6 +644,7 @@ function renderAppSettings(app) {
         <div class="setting-row"><span class="setting-lbl">Debug Mode</span><label class="toggle"><input type="checkbox" id="togDebug" ${s.debugMode ? 'checked' : ''}><span class="slider"></span></label></div>
         <div class="setting-row"><button class="tool-btn" id="btnEmailLogs" ${s.debugMode ? '' : 'disabled'}>Email Logs (${state.debugLogs.length})</button></div>
         ${s.debugMode ? '<div class="setting-row"><span class="setting-lbl">Last log:</span><span class="setting-val">' + (state.debugLogs.length ? state.debugLogs[state.debugLogs.length-1].data.slice(0,50) : 'none') + '</span></div>' : ''}
+        <div class="setting-row"><span class="setting-lbl">Version</span><span class="setting-val" id="appVersion">v${typeof __BUILD_TS__ !== 'undefined' ? __BUILD_TS__ : '?.??????????'}</span></div>
       </div>
     </div>`;
   $('#btnBackS')?.addEventListener('click', () => { state.screen = 'home'; render(); });
